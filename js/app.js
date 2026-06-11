@@ -32,6 +32,7 @@ class App {
       currentProjectId: null,
       notes: [],
       hostTimeOffset: 0,
+      chatMessages: [],
     };
 
     this.recorder = new Recorder();
@@ -199,20 +200,23 @@ class App {
       openSettings: () => self._openSettingsModal(),
       createRoom: () => {
         const code = self.streamSync.createRoom();
-        self.sidePanel.setState({ roomCode: code, role: self.streamSync.role, viewers: self.streamSync.getViewerList() });
+        self.state.chatMessages = [];
+        self.sidePanel.setState({ roomCode: code, role: self.streamSync.role, viewers: self.streamSync.getViewerList(), chatMessages: self.state.chatMessages, myUserId: self.streamSync.userId });
         self.toast(`直播房间已创建: ${code}`, 'success');
         self._syncSidePanel();
       },
       joinRoom: (code) => {
         const ok = self.streamSync.joinRoom(code);
         if (ok) {
-          self.sidePanel.setState({ roomCode: code, role: self.streamSync.role, viewers: self.streamSync.getViewerList() });
+          self.state.chatMessages = [];
+          self.sidePanel.setState({ roomCode: code, role: self.streamSync.role, viewers: self.streamSync.getViewerList(), chatMessages: self.state.chatMessages, myUserId: self.streamSync.userId });
           self._syncSidePanel();
         }
       },
       leaveRoom: () => {
         self.streamSync.leaveRoom();
-        self.sidePanel.setState({ roomCode: null, role: null, viewers: [] });
+        self.state.chatMessages = [];
+        self.sidePanel.setState({ roomCode: null, role: null, viewers: [], chatMessages: [], myUserId: null });
         self._syncSidePanel();
         self.toast('已退出房间', 'success');
       },
@@ -231,6 +235,7 @@ class App {
           note.text = saved.text || '';
           note.strokes = saved.strokes || [];
           if (saved.thumbnail) note.thumbnail = saved.thumbnail;
+          if (saved.thumbMeta) note.thumbMeta = saved.thumbMeta;
           self._persistViewerNotes();
           self.sidePanel.setState({ notes: self.viewerNotes });
           self.toast('笔记已更新', 'success');
@@ -252,6 +257,27 @@ class App {
       downloadMedia: (id) => self._actionDownloadProject(id),
       deleteMedia: (id) => self._actionDeleteProject(id),
       toast: (m, t, d) => self.toast(m, t, d),
+      sendChat: (text) => {
+        const t = self.timeline.currentTime || self.recorder.currentTime || 0;
+        self.streamSync.broadcastChat(text, t);
+        const msg = {
+          id: uuid(),
+          userId: self.streamSync.userId,
+          userName: self.streamSync.userName,
+          text,
+          time: t,
+          isHost: self.streamSync.role === ROLE.HOST,
+          createdAt: Date.now(),
+        };
+        self.state.chatMessages.push(msg);
+        self.sidePanel.setState({ chatMessages: self.state.chatMessages, myUserId: self.streamSync.userId });
+      },
+      jumpToTime: (t) => {
+        if (!isFinite(t)) return;
+        self.timeline.seek(t, true);
+        self._syncTimeUI();
+        self.toast(`跳转到 ${formatTime(t)}`, 'info');
+      },
     };
   }
 
@@ -443,6 +469,22 @@ class App {
     });
     bus.on('stream:strokeLiveEndReceived', () => {
       this.drawEngine.clearOverlay();
+    });
+    bus.on('stream:chat', ({ userId, userName, text, time, isHost }) => {
+      const exists = this.state.chatMessages.find(m => m.userId === userId && m.text === text && m.time === time && Math.abs(m.createdAt - Date.now()) < 5000);
+      if (exists) return;
+      const msg = {
+        id: uuid(),
+        userId,
+        userName,
+        text,
+        time,
+        isHost,
+        createdAt: Date.now(),
+      };
+      this.state.chatMessages.push(msg);
+      this.sidePanel.setState({ chatMessages: this.state.chatMessages, myUserId: this.streamSync.userId });
+      this.toast(`💬 ${userName}: ${text.slice(0, 30)}${text.length > 30 ? '...' : ''}`, 'info', 2500);
     });
     bus.on('stream:bookmarkReceived', (bm) => {
       this.timeline.bookmarks.push(bm);
@@ -701,6 +743,7 @@ class App {
         text: saved.text || '',
         strokes: saved.strokes || [],
         thumbnail: saved.thumbnail || '',
+        thumbMeta: saved.thumbMeta || null,
         createdAt: Date.now(),
       };
       this.viewerNotes.push(note);
@@ -720,7 +763,10 @@ class App {
         const v = $('videoPreview');
         const vf = $('viewerFrame');
         const src = (!v.src && !v.srcObject && vf && vf.style.display !== 'none') ? vf : v;
-        if (!src || (src.tagName === 'VIDEO' && !src.src && !src.srcObject)) return '';
+        if (!src || (src.tagName === 'VIDEO' && !src.src && !src.srcObject)) return { dataUrl: '', meta: null };
+        let vw = 1280, vh = 720;
+        if (src.tagName === 'VIDEO') { vw = src.videoWidth || 1280; vh = src.videoHeight || 720; }
+        else { vw = src.videoWidth || src.width || 1280; vh = src.videoHeight || src.height || 720; }
         const tw = 480, th = 270;
         const off = document.createElement('canvas');
         off.width = tw; off.height = th;
@@ -728,17 +774,17 @@ class App {
         octx.fillStyle = '#050810';
         octx.fillRect(0, 0, tw, th);
         try {
-          const w = src.tagName === 'VIDEO' ? (src.videoWidth || tw) : (src.width || tw);
-          const h = src.tagName === 'VIDEO' ? (src.videoHeight || th) : (src.height || th);
-          const r = Math.min(tw / w, th / h);
-          const dw = w * r, dh = h * r;
+          const r = Math.min(tw / vw, th / vh);
+          const dw = vw * r, dh = vh * r;
           octx.drawImage(src, (tw - dw) / 2, (th - dh) / 2, dw, dh);
         } catch (e) {}
-        return off.toDataURL('image/jpeg', 0.7);
-      } catch (e) { return ''; }
+        return { dataUrl: off.toDataURL('image/jpeg', 0.7), meta: { vw, vh, tw, th } };
+      } catch (e) { return { dataUrl: '', meta: null }; }
     };
 
-    const initialThumb = note.thumbnail || captureThumb();
+    const initial = note.thumbnail ? { dataUrl: note.thumbnail, meta: note.thumbMeta || null } : captureThumb();
+    const initialThumb = initial.dataUrl;
+    const initialMeta = initial.meta;
 
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
@@ -809,16 +855,23 @@ class App {
     let curColor = '#EF4444';
     let curWidth = 4;
 
-    const redrawAll = () => {
+    const getTransform = () => {
       const w = canvas.clientWidth, h = canvas.clientHeight;
+      const vw = initialMeta?.vw || 16, vh = initialMeta?.vh || 9;
+      const r = Math.min(w / vw, h / vh);
+      const dw = vw * r, dh = vh * r;
+      const dx = (w - dw) / 2, dy = (h - dh) / 2;
+      return { w, h, vw, vh, r, dx, dy, dw, dh };
+    };
+
+    const redrawAll = () => {
+      const { w, h, r, dx, dy, dw, dh } = getTransform();
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = '#050810';
       ctx.fillRect(0, 0, w, h);
       if (thumbImg) {
         try {
-          const r = Math.min(w / thumbImg.width, h / thumbImg.height);
-          const dw = thumbImg.width * r, dh = thumbImg.height * r;
-          ctx.drawImage(thumbImg, (w - dw) / 2, (h - dh) / 2, dw, dh);
+          ctx.drawImage(thumbImg, dx, dy, dw, dh);
         } catch (e) {}
       }
       for (const s of strokes) drawStroke(s);
@@ -826,8 +879,9 @@ class App {
 
     const drawStroke = (s) => {
       if (!s.points?.length) return;
-      const w = canvas.clientWidth, h = canvas.clientHeight;
-      const pts = s.points.map(p => ({ x: p.x * w, y: p.y * h }));
+      const { vw, vh, r, dx, dy } = getTransform();
+      const toPx = (p) => ({ x: p.x * vw * r + dx, y: p.y * vh * r + dy });
+      const pts = s.points.map(toPx);
       ctx.save();
       ctx.strokeStyle = s.color;
       ctx.lineWidth = s.width;
@@ -853,10 +907,13 @@ class App {
     };
 
     const getRel = (e) => {
+      const { vw, vh, r, dx, dy, dw, dh } = getTransform();
       const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left - dx;
+      const py = e.clientY - rect.top - dy;
       return {
-        x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-        y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+        x: Math.max(0, Math.min(1, px / (vw * r))),
+        y: Math.max(0, Math.min(1, py / (vh * r))),
       };
     };
 
@@ -922,7 +979,7 @@ class App {
     overlay.querySelector('[data-action="save"]').addEventListener('click', () => {
       const text = overlay.querySelector('[data-field="text"]').value;
       close();
-      onDone({ text, strokes, thumbnail: initialThumb });
+      onDone({ text, strokes, thumbnail: initialThumb, thumbMeta: initialMeta });
     });
     overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); onDone(null); } });
 
@@ -940,36 +997,46 @@ class App {
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#050810';
     ctx.fillRect(0, 0, W, H);
+
+    const vw = note.thumbMeta?.vw || 16, vh = note.thumbMeta?.vh || 9;
+    const r = Math.min(W / vw, H / vh);
+    const dw = vw * r, dh = vh * r;
+    const dx = (W - dw) / 2, dy = (H - dh) / 2;
+
+    const drawStrokes = () => {
+      for (const s of (note.strokes || [])) {
+        if (!s.points?.length) continue;
+        ctx.save();
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = Math.max(1, s.width * 0.5);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        const toPx = (p) => ({ x: p.x * vw * r + dx, y: p.y * vh * r + dy });
+        const pts = s.points.map(toPx);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+          const mx = (pts[i].x + pts[i + 1].x) / 2;
+          const my = (pts[i].y + pts[i + 1].y) / 2;
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        const last = pts[pts.length - 1];
+        ctx.lineTo(last.x, last.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+    };
+
     if (note.thumbnail) {
       if (!this._noteThumbCache) this._noteThumbCache = new Map();
       let img = this._noteThumbCache.get(note.thumbnail.slice(0, 80));
       const drawImg = () => {
-        if (!img) return;
-        try {
-          const r = Math.min(W / img.width, H / img.height);
-          const dw = img.width * r, dh = img.height * r;
-          ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-        } catch (e) {}
-        for (const s of (note.strokes || [])) {
-          if (!s.points?.length) continue;
-          ctx.save();
-          ctx.strokeStyle = s.color;
-          ctx.lineWidth = Math.max(1, s.width * 0.5);
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          const pts = s.points.map(p => ({ x: p.x * W, y: p.y * H }));
-          ctx.beginPath();
-          ctx.moveTo(pts[0].x, pts[0].y);
-          for (let i = 1; i < pts.length - 1; i++) {
-            const mx = (pts[i].x + pts[i + 1].x) / 2;
-            const my = (pts[i].y + pts[i + 1].y) / 2;
-            ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
-          }
-          const last = pts[pts.length - 1];
-          ctx.lineTo(last.x, last.y);
-          ctx.stroke();
-          ctx.restore();
+        if (img) {
+          try {
+            ctx.drawImage(img, dx, dy, dw, dh);
+          } catch (e) {}
         }
+        drawStrokes();
       };
       if (img) { drawImg(); return; }
       img = new Image();
@@ -977,26 +1044,7 @@ class App {
       img.src = note.thumbnail;
       return;
     }
-    for (const s of (note.strokes || [])) {
-      if (!s.points?.length) continue;
-      ctx.save();
-      ctx.strokeStyle = s.color;
-      ctx.lineWidth = Math.max(1, s.width * 0.5);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      const pts = s.points.map(p => ({ x: p.x * W, y: p.y * H }));
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length - 1; i++) {
-        const mx = (pts[i].x + pts[i + 1].x) / 2;
-        const my = (pts[i].y + pts[i + 1].y) / 2;
-        ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
-      }
-      const last = pts[pts.length - 1];
-      ctx.lineTo(last.x, last.y);
-      ctx.stroke();
-      ctx.restore();
-    }
+    drawStrokes();
   }
 
   async _saveNewProject(videoBlob, duration) {

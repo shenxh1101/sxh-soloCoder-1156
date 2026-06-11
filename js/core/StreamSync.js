@@ -200,7 +200,13 @@ export class StreamSync {
         break;
 
       case 'chat':
-        bus.emit('stream:chat', { userId, userName: msg.userName, text: msg.text, time: msg.time });
+        bus.emit('stream:chat', {
+          userId: msg.userId,
+          userName: msg.userName,
+          text: msg.text,
+          time: msg.time,
+          isHost: msg.isHost,
+        });
         break;
     }
   }
@@ -218,6 +224,18 @@ export class StreamSync {
   broadcastLiveStrokeEnd(strokeId) {
     if (!this.channel || this.role !== ROLE.HOST) return;
     this.channel.postMessage({ type: 'strokeLiveEnd', strokeId, authorId: this.userId });
+  }
+
+  broadcastChat(text, timeMs) {
+    if (!this.channel || !this.inRoom) return;
+    this.channel.postMessage({
+      type: 'chat',
+      userId: this.userId,
+      userName: this.userName,
+      text,
+      time: timeMs || 0,
+      isHost: this.role === ROLE.HOST,
+    });
   }
 
   broadcastBookmark(bookmark) {

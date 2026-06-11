@@ -93,68 +93,68 @@ export class Exporter {
 
       try {
         this.videoElement.pause();
-        rec.start(100);
+        rec.start(Math.max(50, Math.floor(500 / this.fps)));
       } catch (e) { cleanup(false); reject(e); return; }
 
       const doSeek = (timeMs) => new Promise(resolve => {
         const targetSec = Math.max(0, Math.min(timeMs / 1000, (this.videoElement.duration || 1) - 0.02));
         let done = false;
         const handler = () => { if (!done) { done = true; this.videoElement.removeEventListener('seeked', handler); resolve(); } };
-        const to = setTimeout(() => { if (!done) { done = true; this.videoElement.removeEventListener('seeked', handler); resolve(); } }, 800);
+        const to = setTimeout(() => { if (!done) { done = true; this.videoElement.removeEventListener('seeked', handler); resolve(); } }, 1200);
         this.videoElement.addEventListener('seeked', handler);
         try { this.videoElement.currentTime = targetSec; }
         catch (e) { clearTimeout(to); handler(); }
       });
 
-      try {
-        await doSeek(startTime);
-        const frameMs = 1000 / this.fps;
-        const totalFrames = Math.max(1, Math.round(duration / frameMs));
-        let lastPct = 0;
-        const perFrameWait = Math.max(0, Math.floor(1000 / this.fps) - 5);
-
-        for (let f = 0; f < totalFrames; f++) {
-          const cur = Math.min(endTime - 1, startTime + f * frameMs);
-          await doSeek(cur);
-
-          ctx.drawImage(this.videoElement, 0, 0, origWidth, origHeight);
-
-          if (burnStrokes && this.drawEngine?.strokes) {
-            ctx.save();
-            for (const s of this.drawEngine.strokes) {
-              if (s.visible === false || s.startTime > cur) continue;
-              renderStrokeToContext(ctx, s, origWidth, origHeight, strokesScaleX, strokesScaleY);
-            }
-            ctx.restore();
-          }
-          ctx.fillStyle = 'rgba(0,0,0,0)';
-          ctx.fillRect(0, 0, 1, 1);
-
-          const pct = Math.floor((f / totalFrames) * 88) + 2;
-          if (pct - lastPct >= 2) {
-            lastPct = pct;
-            onProgress?.(pct, `正在处理第 ${f}/${totalFrames} 帧 (${formatTime(cur, true)})`);
-          }
-          if (perFrameWait) await new Promise(r => setTimeout(r, perFrameWait));
-        }
-
-        await doSeek(endTime);
+      const drawFrame = (curTimeMs) => {
         ctx.drawImage(this.videoElement, 0, 0, origWidth, origHeight);
         if (burnStrokes && this.drawEngine?.strokes) {
           ctx.save();
           for (const s of this.drawEngine.strokes) {
-            if (s.visible === false || s.startTime > endTime) continue;
+            if (s.visible === false || s.startTime > curTimeMs) continue;
             renderStrokeToContext(ctx, s, origWidth, origHeight, strokesScaleX, strokesScaleY);
           }
           ctx.restore();
         }
         ctx.fillStyle = 'rgba(0,0,0,0)';
         ctx.fillRect(0, 0, 1, 1);
+      };
+
+      try {
+        await doSeek(startTime);
+        drawFrame(startTime);
+
+        const frameMs = 1000 / this.fps;
+        const totalFrames = Math.max(1, Math.round(duration / frameMs));
+        let lastPct = 0;
+        const perFrameWait = Math.max(16, Math.round(1000 / this.fps));
+
+        for (let f = 1; f < totalFrames - 1; f++) {
+          const cur = Math.min(endTime - 2, startTime + f * frameMs);
+          await doSeek(cur);
+          drawFrame(cur);
+
+          const pct = Math.floor((f / totalFrames) * 88) + 2;
+          if (pct - lastPct >= 2) {
+            lastPct = pct;
+            onProgress?.(pct, `正在处理第 ${f}/${totalFrames} 帧 (${formatTime(cur, true)})`);
+          }
+          await new Promise(r => setTimeout(r, perFrameWait));
+        }
+
+        if (totalFrames > 1) {
+          await doSeek(endTime);
+          drawFrame(endTime);
+        }
         onProgress?.(92, `正在处理最后一帧 (${formatTime(endTime, true)})`);
 
-        await new Promise(r => setTimeout(r, 800));
+        for (let i = 0; i < this.fps; i++) {
+          drawFrame(endTime);
+          await new Promise(r => setTimeout(r, perFrameWait));
+        }
+
         try { rec.requestData(); } catch {}
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 400));
         try { rec.stop(); } catch (e) { cleanup(true); reject(e); }
       } catch (e) {
         cleanup(true);

@@ -152,6 +152,36 @@ export class SidePanel {
           <button class="btn w-full" id="btnSyncHost">⏱ 同步到主持人时间</button>
         </div>
       ` : ''}
+      <div class="panel-section" style="border-top:1px solid var(--border-glass);padding-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div class="panel-title" style="margin:0">💬 讨论区</div>
+          <span style="font-size:11px;color:var(--text-muted)">${this.data.chatMessages?.length || 0} 条消息</span>
+        </div>
+        <div class="chat-list" id="chatList" style="max-height:220px;overflow-y:auto;border:1px solid var(--border-glass);border-radius:8px;padding:8px;background:rgba(15,23,42,0.4);margin-bottom:8px">
+          ${(this.data.chatMessages || []).length ? (this.data.chatMessages || []).map(m => `
+            <div class="chat-item ${m.userId===this.data.myUserId?'chat-item--mine':''}" data-time="${m.time}" style="padding:6px 8px;margin-bottom:6px;border-radius:8px;background:${m.userId===this.data.myUserId?'rgba(34,211,238,0.08)':'rgba(148,163,184,0.06)'};border-left:3px solid ${m.isHost?'var(--accent-cyan)':'var(--accent-purple)'}">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px">
+                <div style="font-size:12px;font-weight:600;color:${m.isHost?'var(--accent-cyan)':'var(--text-primary)'}">
+                  ${m.isHost?'👑 ':''}${m.userName}
+                </div>
+                <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);cursor:pointer;text-decoration:underline" data-chat-jump="${m.time}">
+                  ${formatTime(m.time)}
+                </div>
+              </div>
+              <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;word-break:break-word">${m.text}</div>
+            </div>
+          `).join('') : `
+            <div class="empty-state" style="padding:20px 0">
+              <div style="font-size:24px;margin-bottom:6px">💬</div>
+              <div style="font-size:12px;color:var(--text-muted)">还没有消息，发送第一条评论吧</div>
+            </div>
+          `}
+        </div>
+        <div style="display:flex;gap:6px">
+          <input class="form-input" id="chatInput" placeholder="说点什么，回车发送（带上当前时间）" style="flex:1;font-size:12px;padding:6px 10px">
+          <button class="btn btn--primary btn--sm" id="btnChatSend">发送</button>
+        </div>
+      </div>
       <div class="panel-section">
         <div class="panel-title">提示</div>
         <div style="font-size:12px;color:var(--text-muted);line-height:1.6">
@@ -177,6 +207,26 @@ export class SidePanel {
       window.open(window.location.pathname + '?room=' + roomCode, '_blank', 'width=1200,height=800');
     });
     panel.querySelector('#btnSyncHost')?.addEventListener('click', () => this.actions.syncToHost());
+
+    const sendChat = () => {
+      const input = panel.querySelector('#chatInput');
+      const text = input?.value?.trim();
+      if (!text) return;
+      this.actions.sendChat(text);
+      input.value = '';
+    };
+    panel.querySelector('#btnChatSend')?.addEventListener('click', sendChat);
+    panel.querySelector('#chatInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+    });
+    panel.querySelectorAll('[data-chat-jump]').forEach(el => {
+      el.addEventListener('click', () => {
+        const t = parseInt(el.dataset.chatJump, 10);
+        if (!isNaN(t)) this.actions.jumpToTime?.(t);
+      });
+    });
+    const chatList = panel.querySelector('#chatList');
+    if (chatList) chatList.scrollTop = chatList.scrollHeight;
   }
 
   _renderBookmarks() {
@@ -225,6 +275,32 @@ export class SidePanel {
     const panel = this.el.querySelector('[data-panel="notes"]');
     if (!panel) return;
     const notes = this.data.notes || [];
+    const state = this._noteSearch || { q: '', filter: 'all', start: null, end: null, expanded: new Set() };
+
+    const q = state.q.trim().toLowerCase();
+    const filtered = notes.filter(n => {
+      if (state.filter === 'with-stroke' && !(n.strokes?.length > 0 || n.thumbnail)) return false;
+      if (state.filter === 'no-stroke' && (n.strokes?.length > 0 || n.thumbnail)) return false;
+      if (state.start != null && n.time < state.start) return false;
+      if (state.end != null && n.time > state.end) return false;
+      if (!q) return true;
+      if (n.text?.toLowerCase().includes(q)) return true;
+      if (formatTime(n.time).includes(q)) return true;
+      return false;
+    });
+
+    const quickRanges = [
+      { label: '全部', value: 'all' },
+      { label: '有涂鸦', value: 'with-stroke' },
+      { label: '无涂鸦', value: 'no-stroke' },
+    ];
+    const timePresets = [
+      { label: '全部', s: null, e: null },
+      { label: '前30秒', s: 0, e: 30000 },
+      { label: '前1分钟', s: 0, e: 60000 },
+      { label: '前5分钟', s: 0, e: 300000 },
+    ];
+
     panel.innerHTML = `
       <div class="panel-section">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -238,38 +314,105 @@ export class SidePanel {
           独立于录制者标注，仅在本地保存。可随时添加和导出。
         </div>
       </div>
-      ${notes.length ? `
+
+      <div class="panel-section" style="border-top:1px solid var(--border-glass);padding-top:12px">
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input class="form-input" id="noteSearchInput" placeholder="🔍 搜索文字或时间，如 01:23" style="flex:1;font-size:12px;padding:6px 10px" value="${state.q}">
+          <button class="btn btn--ghost btn--sm" id="btnClearSearch" ${!q && state.filter==='all' && state.start==null ? 'disabled' : ''}>×</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
+          ${quickRanges.map(r => `<button class="btn btn--ghost btn--sm ${state.filter===r.value?'is-active':''}" data-nf="${r.value}" style="font-size:11px;padding:3px 8px">${r.label}</button>`).join('')}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
+          ${timePresets.map((p,i) => `<button class="btn btn--ghost btn--sm ${state.start===p.s && state.end===p.e?'is-active':''}" data-np="${i}" style="font-size:11px;padding:3px 8px">${p.label}</button>`).join('')}
+        </div>
+        ${q || state.filter!=='all' || state.start!=null ? `
+          <div style="font-size:11px;color:var(--accent-cyan);margin-bottom:6px">
+            🔍 筛选结果：${filtered.length} / ${notes.length} 条笔记
+          </div>
+        ` : ''}
+      </div>
+
+      ${filtered.length ? `
         <div class="note-list">
-          ${notes.map((n, i) => `
-            <div class="note-item" data-id="${n.id}">
+          ${filtered.map((n, i) => {
+            const realIdx = notes.findIndex(x => x.id === n.id);
+            const expanded = state.expanded.has(n.id);
+            return `
+            <div class="note-item ${expanded?'note-item--expanded':''}" data-id="${n.id}" data-real="${realIdx}">
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <div class="note-time">📍 ${formatTime(n.time)}</div>
                 <div class="flex gap-2">
-                  <button class="btn btn--ghost btn--sm" data-act="jump">跳转</button>
+                  <button class="btn btn--ghost btn--sm" data-act="jump" title="跳转到该时间点">跳转</button>
+                  <button class="btn btn--ghost btn--sm" data-act="toggle" title="展开/收起">${expanded?'▽':'▷'}</button>
                   <button class="btn btn--ghost btn--sm" data-act="edit" title="编辑文字/涂鸦">✎</button>
                   <button class="btn btn--ghost btn--sm" data-act="del" style="color:var(--accent-red)">✕</button>
                 </div>
               </div>
               ${n.text ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;line-height:1.5">${n.text}</div>` : ''}
-              ${(n.strokes && n.strokes.length) || n.thumbnail ? `<div class="note-canvas-wrap"><canvas width="320" height="80" data-preview="${i}"></canvas></div>` : `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">（无涂鸦）点击 ✎ 添加笔记涂鸦</div>`}
+              ${expanded && ((n.strokes && n.strokes.length) || n.thumbnail) ? `<div class="note-canvas-wrap"><canvas width="320" height="180" data-preview="${realIdx}"></canvas></div>` : ''}
+              ${expanded && !n.strokes?.length && !n.thumbnail ? `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">（无涂鸦）点击 ✎ 添加笔记涂鸦</div>` : ''}
             </div>
-          `).join('')}
+          `;}).join('')}
         </div>
       ` : `
         <div class="empty-state">
-          <div class="empty-icon">📝</div>
-          <div class="empty-title">还没有笔记</div>
-          <div class="empty-sub">点击"新建"在当前时间点添加笔记。</div>
+          <div class="empty-icon">${q || state.filter!=='all' ? '🔍' : '📝'}</div>
+          <div class="empty-title">${q || state.filter!=='all' ? '没有找到匹配的笔记' : '还没有笔记'}</div>
+          <div class="empty-sub">${q || state.filter!=='all' ? '尝试修改搜索条件' : '点击"新建"在当前时间点添加笔记。'}</div>
         </div>
       `}
     `;
+
+    const apply = () => { this._renderNotes(); };
+
     panel.querySelector('#btnAddNote')?.addEventListener('click', () => this.actions.addNote());
     panel.querySelector('#btnExportNotes')?.addEventListener('click', () => this.actions.exportNotes());
+
+    const searchInput = panel.querySelector('#noteSearchInput');
+    searchInput?.focus();
+    searchInput?.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    searchInput?.addEventListener('input', (e) => {
+      this._noteSearch = { ...this._noteSearch, q: e.target.value };
+      apply();
+    });
+    panel.querySelector('#btnClearSearch')?.addEventListener('click', () => {
+      this._noteSearch = { q: '', filter: 'all', start: null, end: null, expanded: new Set() };
+      apply();
+    });
+    panel.querySelectorAll('[data-nf]').forEach(el => {
+      el.addEventListener('click', () => {
+        this._noteSearch = { ...this._noteSearch, filter: el.dataset.nf };
+        apply();
+      });
+    });
+    panel.querySelectorAll('[data-np]').forEach(el => {
+      el.addEventListener('click', () => {
+        const i = parseInt(el.dataset.np, 10);
+        const p = timePresets[i];
+        this._noteSearch = { ...this._noteSearch, start: p.s, end: p.e };
+        apply();
+      });
+    });
+
     panel.querySelectorAll('.note-item').forEach(el => {
       const jumpBtn = el.querySelector('[data-act="jump"]');
       const delBtn = el.querySelector('[data-act="del"]');
       const editBtn = el.querySelector('[data-act="edit"]');
-      jumpBtn?.addEventListener('click', () => this.actions.gotoNote(el.dataset.id));
+      const toggleBtn = el.querySelector('[data-act="toggle"]');
+      jumpBtn?.addEventListener('click', () => {
+        this.actions.gotoNote(el.dataset.id);
+        if (!this._noteSearch.expanded.has(el.dataset.id)) {
+          this._noteSearch.expanded.add(el.dataset.id);
+          apply();
+        }
+      });
+      toggleBtn?.addEventListener('click', () => {
+        const id = el.dataset.id;
+        if (this._noteSearch.expanded.has(id)) this._noteSearch.expanded.delete(id);
+        else this._noteSearch.expanded.add(id);
+        apply();
+      });
       editBtn?.addEventListener('click', () => this.actions.editNote(el.dataset.id));
       delBtn?.addEventListener('click', () => {
         if (confirm('删除这条笔记？')) this.actions.deleteNote(el.dataset.id);
