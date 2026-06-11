@@ -61,39 +61,60 @@ export class Exporter {
     rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
 
     return new Promise(async (resolve, reject) => {
+      const originalTime = this.videoElement.currentTime || 0;
+      const wasPaused = this.videoElement.paused;
+      let finished = false;
+      const cleanup = (restore) => {
+        if (finished) return;
+        finished = true;
+        try { rec.stop(); } catch {}
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        if (restore) {
+          try {
+            this.videoElement.pause();
+            this.videoElement.currentTime = Math.min(originalTime, (this.videoElement.duration || 1) - 0.01);
+            if (!wasPaused) this.videoElement.play().catch(() => {});
+          } catch (e) {}
+        }
+      };
+
       rec.onstop = async () => {
         try {
           onProgress?.(95, '正在生成文件...');
           const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
           const filename = `ScreenStudio_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.webm`;
+          cleanup(true);
           onProgress?.(100, '导出完成');
           if (options.download !== false) downloadBlob(blob, filename);
           resolve({ blob, filename, size: blob.size, duration });
-        } catch (e) { reject(e); }
+        } catch (e) { cleanup(true); reject(e); }
       };
-      rec.onerror = reject;
+      rec.onerror = (e) => { cleanup(true); reject(e); };
 
-      rec.start(200);
-
-      const wasPaused = this.videoElement.paused;
-      this.videoElement.pause();
-      this.videoElement.currentTime = startTime / 1000;
+      try {
+        this.videoElement.pause();
+        rec.start(100);
+      } catch (e) { cleanup(false); reject(e); return; }
 
       const doSeek = (timeMs) => new Promise(resolve => {
-        const handler = () => { this.videoElement.removeEventListener('seeked', handler); resolve(); };
+        const targetSec = Math.max(0, Math.min(timeMs / 1000, (this.videoElement.duration || 1) - 0.02));
+        let done = false;
+        const handler = () => { if (!done) { done = true; this.videoElement.removeEventListener('seeked', handler); resolve(); } };
+        const to = setTimeout(() => { if (!done) { done = true; this.videoElement.removeEventListener('seeked', handler); resolve(); } }, 800);
         this.videoElement.addEventListener('seeked', handler);
-        try { this.videoElement.currentTime = Math.min(timeMs / 1000, (this.videoElement.duration || 1) - 0.01); }
-        catch (e) { handler(); }
+        try { this.videoElement.currentTime = targetSec; }
+        catch (e) { clearTimeout(to); handler(); }
       });
 
       try {
         await doSeek(startTime);
         const frameMs = 1000 / this.fps;
-        const totalFrames = Math.max(1, Math.floor(duration / frameMs));
+        const totalFrames = Math.max(1, Math.round(duration / frameMs));
         let lastPct = 0;
+        const perFrameWait = Math.max(0, Math.floor(1000 / this.fps) - 5);
 
         for (let f = 0; f < totalFrames; f++) {
-          const cur = Math.min(endTime, startTime + f * frameMs);
+          const cur = Math.min(endTime - 1, startTime + f * frameMs);
           await doSeek(cur);
 
           ctx.drawImage(this.videoElement, 0, 0, origWidth, origHeight);
@@ -109,12 +130,12 @@ export class Exporter {
           ctx.fillStyle = 'rgba(0,0,0,0)';
           ctx.fillRect(0, 0, 1, 1);
 
-          const pct = Math.floor((f / totalFrames) * 90) + 2;
+          const pct = Math.floor((f / totalFrames) * 88) + 2;
           if (pct - lastPct >= 2) {
             lastPct = pct;
             onProgress?.(pct, `正在处理第 ${f}/${totalFrames} 帧 (${formatTime(cur, true)})`);
-            await new Promise(r => setTimeout(r, 0));
           }
+          if (perFrameWait) await new Promise(r => setTimeout(r, perFrameWait));
         }
 
         await doSeek(endTime);
@@ -127,15 +148,16 @@ export class Exporter {
           }
           ctx.restore();
         }
+        ctx.fillStyle = 'rgba(0,0,0,0)';
+        ctx.fillRect(0, 0, 1, 1);
         onProgress?.(92, `正在处理最后一帧 (${formatTime(endTime, true)})`);
 
-        await new Promise(r => setTimeout(r, 500));
-        rec.stop();
-        stream.getTracks().forEach(t => t.stop());
-        if (!wasPaused) this.videoElement.play().catch(() => {});
+        await new Promise(r => setTimeout(r, 800));
+        try { rec.requestData(); } catch {}
+        await new Promise(r => setTimeout(r, 200));
+        try { rec.stop(); } catch (e) { cleanup(true); reject(e); }
       } catch (e) {
-        try { rec.stop(); } catch {}
-        stream.getTracks().forEach(t => t.stop());
+        cleanup(true);
         reject(e);
       }
     });
@@ -169,14 +191,23 @@ export class Exporter {
     const sy = origHeight / (drawCanvas?.height || 1);
 
     const blobs = [];
+    const originalTime = this.videoElement.currentTime || 0;
     const wasPaused = this.videoElement.paused;
+    const restore = () => {
+      try {
+        this.videoElement.pause();
+        this.videoElement.currentTime = Math.min(originalTime, (this.videoElement.duration || 1) - 0.01);
+        if (!wasPaused) this.videoElement.play().catch(() => {});
+      } catch (e) {}
+    };
     this.videoElement.pause();
 
     const doSeek = (t) => new Promise(resolve => {
       const h = () => { this.videoElement.removeEventListener('seeked', h); resolve(); };
+      const to = setTimeout(() => { this.videoElement.removeEventListener('seeked', h); resolve(); }, 800);
       this.videoElement.addEventListener('seeked', h);
-      try { this.videoElement.currentTime = Math.min(t / 1000, (this.videoElement.duration || 1) - 0.01); }
-      catch { h(); }
+      try { this.videoElement.currentTime = Math.max(0, Math.min(t / 1000, (this.videoElement.duration || 1) - 0.02)); }
+      catch { clearTimeout(to); h(); }
     });
 
     try {
@@ -198,7 +229,7 @@ export class Exporter {
         await new Promise(r => setTimeout(r, 0));
       }
 
-      if (!wasPaused) this.videoElement.play().catch(() => {});
+      restore();
 
       const filenameBase = `ScreenStudio_Frames_${new Date().toISOString().slice(0,10)}`;
       for (const item of blobs) {
@@ -209,7 +240,7 @@ export class Exporter {
       onProgress?.(100, `已导出 ${blobs.length} 张图片`);
       return { frames: blobs, count: blobs.length };
     } catch (e) {
-      if (!wasPaused) this.videoElement.play().catch(() => {});
+      restore();
       throw e;
     }
   }

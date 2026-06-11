@@ -181,6 +181,14 @@ export class StreamSync {
         bus.emit('stream:strokeReceived', { stroke: msg.stroke, authorId: msg.authorId });
         break;
 
+      case 'strokeLive':
+        bus.emit('stream:strokeLiveReceived', { stroke: msg.stroke, authorId: msg.authorId });
+        break;
+
+      case 'strokeLiveEnd':
+        bus.emit('stream:strokeLiveEndReceived', { strokeId: msg.strokeId, authorId: msg.authorId });
+        break;
+
       case 'bookmark':
         bus.emit('stream:bookmarkReceived', msg.bookmark);
         break;
@@ -200,6 +208,16 @@ export class StreamSync {
   broadcastStroke(stroke) {
     if (!this.channel || this.role !== ROLE.HOST) return;
     this.channel.postMessage({ type: 'stroke', stroke, authorId: this.userId });
+  }
+
+  broadcastLiveStroke(stroke) {
+    if (!this.channel || this.role !== ROLE.HOST) return;
+    this.channel.postMessage({ type: 'strokeLive', stroke, authorId: this.userId });
+  }
+
+  broadcastLiveStrokeEnd(strokeId) {
+    if (!this.channel || this.role !== ROLE.HOST) return;
+    this.channel.postMessage({ type: 'strokeLiveEnd', strokeId, authorId: this.userId });
   }
 
   broadcastBookmark(bookmark) {

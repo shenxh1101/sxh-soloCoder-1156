@@ -145,6 +145,10 @@ export class DrawEngine {
     pts.push({ ...p, timestamp: ts, pressure: e.pressure || 1 });
     this.currentStroke.endTime = ts;
     this._renderLiveStroke();
+    if (!this._liveThrottle || (ts - this._liveThrottle) > 40) {
+      this._liveThrottle = ts;
+      bus.emit('draw:strokeLive', { ...this.currentStroke, points: this.currentStroke.points.slice() });
+    }
   }
 
   _onPointerUp(e) {
@@ -159,6 +163,7 @@ export class DrawEngine {
       this.strokes.push(stroke);
       this.undoStack.push({ type: 'add', strokeId: stroke.id });
       this.redoStack.length = 0;
+      bus.emit('draw:strokeLiveEnd', { id: stroke.id });
       bus.emit('draw:strokeAdded', stroke);
     }
     this.currentStroke = null;
@@ -307,6 +312,16 @@ export class DrawEngine {
   addExternalStroke(stroke) {
     this.strokes.push(stroke);
     this.redrawAll();
+  }
+
+  renderOverlayStroke(stroke) {
+    if (!this.overlayCtx) return;
+    this.overlayCtx.clearRect(0, 0, this.width, this.height);
+    if (stroke) this._drawStroke(this.overlayCtx, stroke, true);
+  }
+
+  clearOverlay() {
+    if (this.overlayCtx) this.overlayCtx.clearRect(0, 0, this.width, this.height);
   }
 
   toDataURL() {

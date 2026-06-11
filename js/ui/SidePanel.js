@@ -251,7 +251,7 @@ export class SidePanel {
                 </div>
               </div>
               ${n.text ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;line-height:1.5">${n.text}</div>` : ''}
-              ${n.strokes && n.strokes.length ? `<div class="note-canvas-wrap"><canvas width="320" height="80" data-preview="${i}"></canvas></div>` : `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">（无涂鸦）点击 ✎ 添加笔记涂鸦</div>`}
+              ${(n.strokes && n.strokes.length) || n.thumbnail ? `<div class="note-canvas-wrap"><canvas width="320" height="80" data-preview="${i}"></canvas></div>` : `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">（无涂鸦）点击 ✎ 添加笔记涂鸦</div>`}
             </div>
           `).join('')}
         </div>

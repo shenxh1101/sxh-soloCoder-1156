@@ -230,6 +230,7 @@ class App {
           if (!saved) return;
           note.text = saved.text || '';
           note.strokes = saved.strokes || [];
+          if (saved.thumbnail) note.thumbnail = saved.thumbnail;
           self._persistViewerNotes();
           self.sidePanel.setState({ notes: self.viewerNotes });
           self.toast('笔记已更新', 'success');
@@ -367,6 +368,14 @@ class App {
       if (this.streamSync.role === ROLE.HOST) this.streamSync.broadcastStroke(stroke);
     });
 
+    bus.on('draw:strokeLive', (stroke) => {
+      if (this.streamSync.role === ROLE.HOST) this.streamSync.broadcastLiveStroke(stroke);
+    });
+
+    bus.on('draw:strokeLiveEnd', ({ id }) => {
+      if (this.streamSync.role === ROLE.HOST) this.streamSync.broadcastLiveStrokeEnd(id);
+    });
+
     bus.on('timeline:time', ({ current }) => {
       if (this.state.strokesVisible) this.drawEngine.renderStrokesForTime(current);
       else {
@@ -427,6 +436,13 @@ class App {
       if (!stroke) return;
       this.drawEngine.addExternalStroke(stroke);
       this.drawEngine.redrawAll();
+    });
+    bus.on('stream:strokeLiveReceived', ({ stroke }) => {
+      if (!stroke) return;
+      this.drawEngine.renderOverlayStroke(stroke);
+    });
+    bus.on('stream:strokeLiveEndReceived', () => {
+      this.drawEngine.clearOverlay();
     });
     bus.on('stream:bookmarkReceived', (bm) => {
       this.timeline.bookmarks.push(bm);
@@ -684,6 +700,7 @@ class App {
         time,
         text: saved.text || '',
         strokes: saved.strokes || [],
+        thumbnail: saved.thumbnail || '',
         createdAt: Date.now(),
       };
       this.viewerNotes.push(note);
@@ -697,6 +714,32 @@ class App {
   _openNoteEditor(note, onDone) {
     const root = $('modalRoot');
     const time = note.time ?? 0;
+
+    const captureThumb = () => {
+      try {
+        const v = $('videoPreview');
+        const vf = $('viewerFrame');
+        const src = (!v.src && !v.srcObject && vf && vf.style.display !== 'none') ? vf : v;
+        if (!src || (src.tagName === 'VIDEO' && !src.src && !src.srcObject)) return '';
+        const tw = 480, th = 270;
+        const off = document.createElement('canvas');
+        off.width = tw; off.height = th;
+        const octx = off.getContext('2d');
+        octx.fillStyle = '#050810';
+        octx.fillRect(0, 0, tw, th);
+        try {
+          const w = src.tagName === 'VIDEO' ? (src.videoWidth || tw) : (src.width || tw);
+          const h = src.tagName === 'VIDEO' ? (src.videoHeight || th) : (src.height || th);
+          const r = Math.min(tw / w, th / h);
+          const dw = w * r, dh = h * r;
+          octx.drawImage(src, (tw - dw) / 2, (th - dh) / 2, dw, dh);
+        } catch (e) {}
+        return off.toDataURL('image/jpeg', 0.7);
+      } catch (e) { return ''; }
+    };
+
+    const initialThumb = note.thumbnail || captureThumb();
+
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
@@ -712,7 +755,7 @@ class App {
           </div>
           <div class="form-row">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <div class="form-label" style="margin:0">涂鸦区域（观众独立笔记，不会影响录制者）</div>
+              <div class="form-label" style="margin:0">涂鸦区域（在当前视频帧上标注）</div>
               <div style="display:flex;gap:6px;align-items:center">
                 <div style="display:flex;gap:4px">
                   ${['#EF4444','#F59E0B','#10B981','#22D3EE','#A855F7','#FFFFFF'].map((c,i)=>`<div class="ne-swatch" data-color="${c}" style="width:22px;height:22px;border-radius:50%;cursor:pointer;background:${c};border:2px solid ${i===0?'white':'transparent'};box-shadow:${i===0?'0 0 0 2px var(--accent-cyan)':'none'}"></div>`).join('')}
@@ -729,7 +772,7 @@ class App {
             <div style="width:100%;aspect-ratio:16/9;border-radius:10px;background:#050810;border:1px solid var(--border-glass);overflow:hidden;position:relative;cursor:crosshair">
               <canvas id="neCanvas" style="width:100%;height:100%;display:block"></canvas>
             </div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:6px">提示：在黑色画布上自由涂画，笔迹会随笔记一起保存并可导出JSON。</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:6px">提示：底图为笔记创建时的视频帧，涂鸦叠加在上方。笔迹、时间点、文字随 JSON 导出/导入。</div>
           </div>
         </div>
         <div class="modal-footer">
@@ -742,6 +785,15 @@ class App {
 
     const canvas = overlay.querySelector('#neCanvas');
     const ctx = canvas.getContext('2d');
+    let thumbImg = null;
+    const loadThumb = () => new Promise(resolve => {
+      if (!initialThumb) { resolve(null); return; }
+      const im = new Image();
+      im.onload = () => { thumbImg = im; resolve(im); };
+      im.onerror = () => resolve(null);
+      im.src = initialThumb;
+    });
+
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.max(1, Math.floor(rect.width * devicePixelRatio));
@@ -749,8 +801,6 @@ class App {
       ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
       redrawAll();
     };
-    requestAnimationFrame(resize);
-    window.addEventListener('resize', resize);
 
     let strokes = (note.strokes || []).map(s => JSON.parse(JSON.stringify(s)));
     let undoStack = [];
@@ -764,6 +814,13 @@ class App {
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = '#050810';
       ctx.fillRect(0, 0, w, h);
+      if (thumbImg) {
+        try {
+          const r = Math.min(w / thumbImg.width, h / thumbImg.height);
+          const dw = thumbImg.width * r, dh = thumbImg.height * r;
+          ctx.drawImage(thumbImg, (w - dw) / 2, (h - dh) / 2, dw, dh);
+        } catch (e) {}
+      }
       for (const s of strokes) drawStroke(s);
     };
 
@@ -865,17 +922,62 @@ class App {
     overlay.querySelector('[data-action="save"]').addEventListener('click', () => {
       const text = overlay.querySelector('[data-field="text"]').value;
       close();
-      onDone({ text, strokes });
+      onDone({ text, strokes, thumbnail: initialThumb });
     });
     overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); onDone(null); } });
+
+    loadThumb().then(() => {
+      requestAnimationFrame(resize);
+      window.addEventListener('resize', resize);
+    });
   }
 
   _renderNotePreview(note, canvasEl) {
-    if (!note?.strokes?.length) return;
+    if (!note || !canvasEl) return;
+    if (!note.thumbnail && !note.strokes?.length) return;
     const ctx = canvasEl.getContext('2d');
     const W = canvasEl.width, H = canvasEl.height;
     ctx.clearRect(0, 0, W, H);
-    for (const s of note.strokes) {
+    ctx.fillStyle = '#050810';
+    ctx.fillRect(0, 0, W, H);
+    if (note.thumbnail) {
+      if (!this._noteThumbCache) this._noteThumbCache = new Map();
+      let img = this._noteThumbCache.get(note.thumbnail.slice(0, 80));
+      const drawImg = () => {
+        if (!img) return;
+        try {
+          const r = Math.min(W / img.width, H / img.height);
+          const dw = img.width * r, dh = img.height * r;
+          ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        } catch (e) {}
+        for (const s of (note.strokes || [])) {
+          if (!s.points?.length) continue;
+          ctx.save();
+          ctx.strokeStyle = s.color;
+          ctx.lineWidth = Math.max(1, s.width * 0.5);
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          const pts = s.points.map(p => ({ x: p.x * W, y: p.y * H }));
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length - 1; i++) {
+            const mx = (pts[i].x + pts[i + 1].x) / 2;
+            const my = (pts[i].y + pts[i + 1].y) / 2;
+            ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+          }
+          const last = pts[pts.length - 1];
+          ctx.lineTo(last.x, last.y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      };
+      if (img) { drawImg(); return; }
+      img = new Image();
+      img.onload = () => { this._noteThumbCache.set(note.thumbnail.slice(0, 80), img); drawImg(); };
+      img.src = note.thumbnail;
+      return;
+    }
+    for (const s of (note.strokes || [])) {
       if (!s.points?.length) continue;
       ctx.save();
       ctx.strokeStyle = s.color;
