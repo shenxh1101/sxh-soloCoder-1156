@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ScreenStudio · 屏幕录制 & 实时涂鸦协作工具</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="toolbar glass-panel" id="toolbar"></header>
+
+    <aside class="toolbox glass-panel" id="toolbox"></aside>
+
+    <main class="canvas-wrap glass-panel">
+      <div class="canvas-container" id="canvasContainer">
+        <div class="canvas-inner">
+          <div class="placeholder" id="placeholder">
+            <div class="placeholder__icon">🎬</div>
+            <div class="placeholder__title">准备开始你的创作</div>
+            <div class="placeholder__sub">
+              一键录制浏览器标签页，搭配实时画笔标注、时间轴打点、帧级剪辑，<br/>
+              导出专业级 WebM 视频与帧序列。
+            </div>
+            <div class="placeholder__features">
+              <div class="placeholder__feature">
+                <div class="emoji">🎙</div>
+                屏幕录制
+              </div>
+              <div class="placeholder__feature">
+                <div class="emoji">✏️</div>
+                实时涂鸦
+              </div>
+              <div class="placeholder__feature">
+                <div class="emoji">📡</div>
+                多人直播
+              </div>
+              <div class="placeholder__feature">
+                <div class="emoji">✂️</div>
+                帧级剪辑
+              </div>
+            </div>
+          </div>
+          <video class="video-preview" id="videoPreview" playsinline muted crossorigin="anonymous"></video>
+          <canvas class="draw-canvas" id="drawCanvas"></canvas>
+          <canvas class="overlay-canvas" id="overlayCanvas"></canvas>
+          <div class="cursor-highlight" id="cursorHighlight"></div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="sidepanel glass-panel" id="sidepanel"></aside>
+
+    <footer class="timeline-wrap glass-panel" id="timelineWrap"></footer>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <div id="modalRoot"></div>
+
+  <input type="file" id="videoFileInput" accept="video/*" style="display:none" />
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
