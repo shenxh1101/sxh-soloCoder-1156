@@ -89,11 +89,11 @@ export class Exporter {
       try {
         await doSeek(startTime);
         const frameMs = 1000 / this.fps;
-        const totalFrames = Math.ceil(duration / frameMs);
+        const totalFrames = Math.max(1, Math.floor(duration / frameMs));
         let lastPct = 0;
 
-        for (let f = 0; f <= totalFrames; f++) {
-          const cur = startTime + f * frameMs;
+        for (let f = 0; f < totalFrames; f++) {
+          const cur = Math.min(endTime, startTime + f * frameMs);
           await doSeek(cur);
 
           ctx.drawImage(this.videoElement, 0, 0, origWidth, origHeight);
@@ -117,7 +117,19 @@ export class Exporter {
           }
         }
 
-        await new Promise(r => setTimeout(r, 300));
+        await doSeek(endTime);
+        ctx.drawImage(this.videoElement, 0, 0, origWidth, origHeight);
+        if (burnStrokes && this.drawEngine?.strokes) {
+          ctx.save();
+          for (const s of this.drawEngine.strokes) {
+            if (s.visible === false || s.startTime > endTime) continue;
+            renderStrokeToContext(ctx, s, origWidth, origHeight, strokesScaleX, strokesScaleY);
+          }
+          ctx.restore();
+        }
+        onProgress?.(92, `正在处理最后一帧 (${formatTime(endTime, true)})`);
+
+        await new Promise(r => setTimeout(r, 500));
         rec.stop();
         stream.getTracks().forEach(t => t.stop());
         if (!wasPaused) this.videoElement.play().catch(() => {});

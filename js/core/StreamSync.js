@@ -49,15 +49,36 @@ export class StreamSync {
 
     this.frameInterval = setInterval(() => {
       if (!this.channel) return;
-      const cvs = document.querySelector('.draw-canvas') || document.querySelector('.video-preview');
-      if (!cvs) return;
       try {
-        const url = cvs.toDataURL?.('image/jpeg', 0.6);
-        if (url) {
-          this.channel.postMessage({ type: 'frame', url, time: Date.now() });
+        const videoEl = document.querySelector('.video-preview');
+        const drawCvs = document.querySelector('.draw-canvas');
+        if (!videoEl || !drawCvs) return;
+        const W = drawCvs.width || 640;
+        const H = drawCvs.height || 360;
+        if (W === 0 || H === 0) return;
+        if (!this._offscreen) {
+          this._offscreen = document.createElement('canvas');
         }
-      } catch (e) {}
-    }, 300);
+        const off = this._offscreen;
+        off.width = Math.max(1, Math.floor(W * 0.6));
+        off.height = Math.max(1, Math.floor(H * 0.6));
+        const octx = off.getContext('2d');
+        octx.fillStyle = '#000';
+        octx.fillRect(0, 0, off.width, off.height);
+        try {
+          octx.drawImage(videoEl, 0, 0, off.width, off.height);
+        } catch (e) {}
+        try {
+          octx.drawImage(drawCvs, 0, 0, off.width, off.height);
+        } catch (e) {}
+        try {
+          const url = off.toDataURL('image/jpeg', 0.55);
+          if (url && url.length < 400000) {
+            this.channel.postMessage({ type: 'frame', url, time: Date.now(), w: off.width, h: off.height });
+          }
+        } catch (e) {}
+      } catch (e) { console.warn('frame broadcast error', e); }
+    }, 400);
 
     bus.emit('stream:roomCreated', { roomCode: this.roomCode, role: this.role });
     return this.roomCode;

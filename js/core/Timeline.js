@@ -114,9 +114,10 @@ export class Timeline {
   }
 
   addBookmark(timeMs, label = '', color = '#22D3EE') {
+    const upperBound = this.duration > 0 ? this.duration : Math.max(timeMs || 0, 1);
     const bm = {
       id: uuid(),
-      time: clamp(timeMs, 0, this.duration),
+      time: clamp(timeMs, 0, upperBound),
       label: label || `书签 ${this.bookmarks.length + 1}`,
       color,
       createdAt: Date.now(),

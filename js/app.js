@@ -223,6 +223,18 @@ class App {
         }
       },
       addNote: () => self._actionAddNote(),
+      editNote: (id) => {
+        const note = self.viewerNotes.find(n => n.id === id);
+        if (!note) return;
+        self._openNoteEditor(note, (saved) => {
+          if (!saved) return;
+          note.text = saved.text || '';
+          note.strokes = saved.strokes || [];
+          self._persistViewerNotes();
+          self.sidePanel.setState({ notes: self.viewerNotes });
+          self.toast('笔记已更新', 'success');
+        });
+      },
       deleteNote: (id) => {
         self.viewerNotes = self.viewerNotes.filter(n => n.id !== id);
         self._persistViewerNotes();
@@ -304,6 +316,7 @@ class App {
     bus.on('recorder:tick', ({ time }) => {
       this.toolbar.setState({ currentTime: time });
       this.timeline.currentTime = time;
+      if (this.timeline.duration < time) this.timeline.duration = time;
     });
 
     bus.on('recorder:paused', ({ time }) => {
@@ -378,25 +391,42 @@ class App {
     bus.on('stream:viewerList', () => this._syncSidePanel());
     bus.on('stream:viewerJoined', ({ userName }) => this.toast(`${userName} 加入了房间`, 'info'));
     bus.on('stream:viewerLeft', ({ userName }) => this.toast(`${userName} 离开了房间`, 'info'));
-    bus.on('stream:frameReceived', ({ url }) => {
+    bus.on('stream:frameReceived', ({ url, w, h }) => {
+      $('placeholder').classList.add('hidden');
       const v = $('videoPreview');
-      const img = new Image();
-      img.onload = () => {
-        const cvs = $('drawCanvas').parentElement.querySelector('.video-preview');
-        const off = document.createElement('canvas');
-        off.width = img.width; off.height = img.height;
-        off.getContext('2d').drawImage(img, 0, 0);
-        const u2 = off.toDataURL('image/png');
-        if (!v.src.startsWith('blob:') || !this.state.hasVideo) {
-          v.poster = u2;
-        }
+      const viewerFrame = $('viewerFrame');
+      if (!viewerFrame) return;
+      if (!this._viewerImg) this._viewerImg = new Image();
+      const img = this._viewerImg;
+      const drawFrame = () => {
+        const W = viewerFrame.width = viewerFrame.parentElement.clientWidth || 1280;
+        const H = viewerFrame.height = viewerFrame.parentElement.clientHeight || 720;
+        const ctx = viewerFrame.getContext('2d');
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+        try {
+          const ratio = Math.min(W / img.width, H / img.height);
+          const dw = img.width * ratio;
+          const dh = img.height * ratio;
+          const dx = (W - dw) / 2;
+          const dy = (H - dh) / 2;
+          ctx.drawImage(img, dx, dy, dw, dh);
+        } catch (e) {}
       };
-      img.src = url;
+      img.onload = drawFrame;
+      try { img.src = url; } catch {}
+      if (v.src) { try { v.removeAttribute('src'); v.load && v.load(); } catch {} v.src = ''; }
+      if (v.srcObject) { try { v.srcObject.getTracks().forEach(t => t.stop()); } catch {} v.srcObject = null; }
+      v.style.display = 'none';
+      viewerFrame.style.display = 'block';
+      this.state.hasVideo = true;
+      this.timeline.setDuration(Math.max(this.timeline.duration, 3600 * 1000));
+      this.toolbar.setState({ hasVideo: true });
     });
     bus.on('stream:strokeReceived', ({ stroke }) => {
       if (!stroke) return;
       this.drawEngine.addExternalStroke(stroke);
-      if (this.state.strokesVisible) this.drawEngine.renderStrokesForTime(this.timeline.currentTime);
+      this.drawEngine.redrawAll();
     });
     bus.on('stream:bookmarkReceived', (bm) => {
       this.timeline.bookmarks.push(bm);
@@ -570,10 +600,15 @@ class App {
   async _importVideo(file) {
     const modal = this._openProgressModal('正在加载视频...');
     try {
+      this.drawEngine.loadStrokes([]);
+      this.timeline.reset();
       const url = URL.createObjectURL(file);
       const v = $('videoPreview');
       v.srcObject = null;
       v.src = url;
+      const viewerFrame = $('viewerFrame');
+      if (viewerFrame) { viewerFrame.style.display = 'none'; viewerFrame.getContext('2d').clearRect(0, 0, viewerFrame.width, viewerFrame.height); }
+      v.style.display = '';
       await new Promise((resolve, reject) => {
         v.onloadedmetadata = resolve;
         v.onerror = () => reject(new Error('视频加载失败'));
@@ -583,6 +618,7 @@ class App {
       const dur = isFinite(v.duration) ? v.duration * 1000 : 0;
       this.timeline.setDuration(dur);
       this.timeline.resetClip();
+      this.timeline.seek(0);
       $('placeholder').classList.add('hidden');
 
       const blobId = uuid();
@@ -594,8 +630,8 @@ class App {
         duration: dur,
         videoBlobId: blobId,
         videoSize: { width: v.videoWidth, height: v.videoHeight },
-        strokes: this.drawEngine.exportStrokes(),
-        bookmarks: this.timeline.bookmarks,
+        strokes: [],
+        bookmarks: [],
         clipStart: 0,
         clipEnd: dur,
         settings: { fps: 30, includeAudio: true, cursorHighlight: false },
@@ -641,20 +677,197 @@ class App {
 
   _actionAddNote() {
     const time = this.timeline.currentTime || this.recorder.currentTime || 0;
-    const text = prompt('笔记内容（可留空，之后在画布上涂画）：', '');
-    if (text === null) return;
-    const note = {
-      id: uuid(),
-      time,
-      text: text || '',
-      strokes: [],
-      createdAt: Date.now(),
+    this._openNoteEditor({ time, text: '', strokes: [] }, (saved) => {
+      if (!saved) return;
+      const note = {
+        id: uuid(),
+        time,
+        text: saved.text || '',
+        strokes: saved.strokes || [],
+        createdAt: Date.now(),
+      };
+      this.viewerNotes.push(note);
+      this.viewerNotes.sort((a, b) => a.time - b.time);
+      this._persistViewerNotes();
+      this.sidePanel.setState({ notes: this.viewerNotes });
+      this.toast(`笔记已添加 @ ${formatTime(time)}`, 'success');
+    });
+  }
+
+  _openNoteEditor(note, onDone) {
+    const root = $('modalRoot');
+    const time = note.time ?? 0;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="width:min(760px,94vw)">
+        <div class="modal-header">
+          <div class="modal-title">📝 笔记编辑器 · <span style="font-family:var(--font-mono);color:var(--accent-cyan);font-size:14px">${formatTime(time)}</span></div>
+          <button class="modal-close" data-action="close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-label">文字笔记</div>
+            <textarea class="form-input" data-field="text" rows="3" style="resize:vertical;font-family:var(--font-display)">${note.text || ''}</textarea>
+          </div>
+          <div class="form-row">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div class="form-label" style="margin:0">涂鸦区域（观众独立笔记，不会影响录制者）</div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <div style="display:flex;gap:4px">
+                  ${['#EF4444','#F59E0B','#10B981','#22D3EE','#A855F7','#FFFFFF'].map((c,i)=>`<div class="ne-swatch" data-color="${c}" style="width:22px;height:22px;border-radius:50%;cursor:pointer;background:${c};border:2px solid ${i===0?'white':'transparent'};box-shadow:${i===0?'0 0 0 2px var(--accent-cyan)':'none'}"></div>`).join('')}
+                </div>
+                <div style="width:1px;height:22px;background:var(--border-glass);margin:0 4px"></div>
+                <div style="display:flex;gap:6px;align-items:center">
+                  ${[2,4,8,14].map((s,i)=>`<div class="ne-width" data-width="${s}" style="width:${s+8}px;height:${s+8}px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center"><div style="width:${s}px;height:${s}px;border-radius:50%;background:${i===1?'var(--accent-cyan)':'var(--text-secondary)'}"></div></div>`).join('')}
+                </div>
+                <div style="width:1px;height:22px;background:var(--border-glass);margin:0 4px"></div>
+                <button class="btn btn--ghost btn--sm" data-action="undo">↶</button>
+                <button class="btn btn--ghost btn--sm" data-action="clear">清空</button>
+              </div>
+            </div>
+            <div style="width:100%;aspect-ratio:16/9;border-radius:10px;background:#050810;border:1px solid var(--border-glass);overflow:hidden;position:relative;cursor:crosshair">
+              <canvas id="neCanvas" style="width:100%;height:100%;display:block"></canvas>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:6px">提示：在黑色画布上自由涂画，笔迹会随笔记一起保存并可导出JSON。</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" data-action="cancel">取消</button>
+          <button class="btn btn--primary" data-action="save">保存笔记</button>
+        </div>
+      </div>
+    `;
+    root.appendChild(overlay);
+
+    const canvas = overlay.querySelector('#neCanvas');
+    const ctx = canvas.getContext('2d');
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.floor(rect.width * devicePixelRatio));
+      canvas.height = Math.max(1, Math.floor(rect.height * devicePixelRatio));
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      redrawAll();
     };
-    this.viewerNotes.push(note);
-    this.viewerNotes.sort((a, b) => a.time - b.time);
-    this._persistViewerNotes();
-    this.sidePanel.setState({ notes: this.viewerNotes });
-    this.toast(`笔记已添加 @ ${formatTime(time)}`, 'success');
+    requestAnimationFrame(resize);
+    window.addEventListener('resize', resize);
+
+    let strokes = (note.strokes || []).map(s => JSON.parse(JSON.stringify(s)));
+    let undoStack = [];
+    let drawing = false;
+    let curStroke = null;
+    let curColor = '#EF4444';
+    let curWidth = 4;
+
+    const redrawAll = () => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#050810';
+      ctx.fillRect(0, 0, w, h);
+      for (const s of strokes) drawStroke(s);
+    };
+
+    const drawStroke = (s) => {
+      if (!s.points?.length) return;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      const pts = s.points.map(p => ({ x: p.x * w, y: p.y * h }));
+      ctx.save();
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = s.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, s.width / 2, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+          const mx = (pts[i].x + pts[i + 1].x) / 2;
+          const my = (pts[i].y + pts[i + 1].y) / 2;
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+
+    const getRel = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+      };
+    };
+
+    canvas.addEventListener('pointerdown', (e) => {
+      drawing = true;
+      const p = getRel(e);
+      curStroke = { id: uuid(), tool: 'pen', color: curColor, width: curWidth, points: [p], startTime: 0, endTime: 0, visible: true };
+      canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!drawing || !curStroke) return;
+      const p = getRel(e);
+      const last = curStroke.points[curStroke.points.length - 1];
+      if (last && Math.abs(last.x - p.x) < 0.002 && Math.abs(last.y - p.y) < 0.002) return;
+      curStroke.points.push(p);
+      redrawAll();
+      drawStroke(curStroke);
+    });
+    const up = () => {
+      if (!drawing) return;
+      drawing = false;
+      if (curStroke && curStroke.points.length) {
+        strokes.push(curStroke);
+        undoStack.push(curStroke.id);
+      }
+      curStroke = null;
+      redrawAll();
+    };
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+    canvas.addEventListener('pointerleave', up);
+
+    overlay.querySelectorAll('.ne-swatch').forEach(el => {
+      el.addEventListener('click', () => {
+        curColor = el.dataset.color;
+        overlay.querySelectorAll('.ne-swatch').forEach(x => { x.style.border = '2px solid transparent'; x.style.boxShadow = 'none'; });
+        el.style.border = '2px solid white';
+        el.style.boxShadow = '0 0 0 2px var(--accent-cyan)';
+      });
+    });
+    overlay.querySelectorAll('.ne-width').forEach(el => {
+      el.addEventListener('click', () => {
+        curWidth = parseInt(el.dataset.width, 10);
+        overlay.querySelectorAll('.ne-width > div').forEach((x, i) => {
+          x.style.background = i === [...overlay.querySelectorAll('.ne-width')].indexOf(el) ? 'var(--accent-cyan)' : 'var(--text-secondary)';
+        });
+      });
+    });
+
+    overlay.querySelector('[data-action="undo"]').addEventListener('click', () => {
+      if (strokes.length) {
+        strokes.pop();
+        redrawAll();
+      }
+    });
+    overlay.querySelector('[data-action="clear"]').addEventListener('click', () => {
+      if (strokes.length && confirm('清空画布？')) { strokes = []; redrawAll(); }
+    });
+
+    const close = () => { window.removeEventListener('resize', resize); overlay.remove(); };
+    overlay.querySelector('[data-action="close"]').addEventListener('click', () => { close(); onDone(null); });
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => { close(); onDone(null); });
+    overlay.querySelector('[data-action="save"]').addEventListener('click', () => {
+      const text = overlay.querySelector('[data-field="text"]').value;
+      close();
+      onDone({ text, strokes });
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); onDone(null); } });
   }
 
   _renderNotePreview(note, canvasEl) {

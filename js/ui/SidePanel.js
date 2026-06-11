@@ -246,11 +246,12 @@ export class SidePanel {
                 <div class="note-time">📍 ${formatTime(n.time)}</div>
                 <div class="flex gap-2">
                   <button class="btn btn--ghost btn--sm" data-act="jump">跳转</button>
+                  <button class="btn btn--ghost btn--sm" data-act="edit" title="编辑文字/涂鸦">✎</button>
                   <button class="btn btn--ghost btn--sm" data-act="del" style="color:var(--accent-red)">✕</button>
                 </div>
               </div>
               ${n.text ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;line-height:1.5">${n.text}</div>` : ''}
-              ${n.strokes && n.strokes.length ? `<div class="note-canvas-wrap"><canvas width="320" height="80" data-preview="${i}"></canvas></div>` : ''}
+              ${n.strokes && n.strokes.length ? `<div class="note-canvas-wrap"><canvas width="320" height="80" data-preview="${i}"></canvas></div>` : `<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">（无涂鸦）点击 ✎ 添加笔记涂鸦</div>`}
             </div>
           `).join('')}
         </div>
@@ -267,7 +268,9 @@ export class SidePanel {
     panel.querySelectorAll('.note-item').forEach(el => {
       const jumpBtn = el.querySelector('[data-act="jump"]');
       const delBtn = el.querySelector('[data-act="del"]');
+      const editBtn = el.querySelector('[data-act="edit"]');
       jumpBtn?.addEventListener('click', () => this.actions.gotoNote(el.dataset.id));
+      editBtn?.addEventListener('click', () => this.actions.editNote(el.dataset.id));
       delBtn?.addEventListener('click', () => {
         if (confirm('删除这条笔记？')) this.actions.deleteNote(el.dataset.id);
       });
